@@ -13,7 +13,7 @@
       "InstanceType":{
          "Description":"WebServer EC2 instance type",
          "Type":"String",
-         "Default":"m1.small",
+         "Default":"t1.micro",
          "AllowedValues":[
             "t1.micro",
             "m1.small",
@@ -43,7 +43,7 @@
          "ConstraintDescription":"must be a valid IP CIDR range of the form x.x.x.x/x."
       },
       "ScaleUpTme":{
-        "Description":"Recurring cron style scale up time",
+         "Description":"Recurring cron style scale up time",
          "Type":"String",
          "Default":"0 0 * * *"
       },
@@ -130,6 +130,19 @@
    "Resources":{
       "SelfTerminatingLaunchConfiguration":{
          "Type":"AWS::AutoScaling::LaunchConfiguration",
+         "Metadata":{
+            "AWS::CloudFormation::Init":{
+               "config":{
+                  "packages":{
+                     "yum":{
+                        "aws-cli":[
+
+                        ]
+                     }
+                  }
+               }
+            }
+         },
          "Properties":{
             "ImageId":{
                "Fn::FindInMap":[
@@ -180,8 +193,8 @@
                         },
                         "\n",
                         "echo 'Do something useful'\n",
-                        "ami_id=`curl http://169.254.169.254/latest/meta-data/instance-id`\n",
-                        "autoscale_group=`aws ec2 describe-tags --filters \"Name=resource-id,Values=$ami_id\"",
+                        "instance_id=`curl http://169.254.169.254/latest/meta-data/instance-id`\n",
+                        "autoscale_group=`aws ec2 describe-tags --filters \"Name=resource-id,Values=$instance_id\"",
                         " --region ",
                         {
                            "Ref":"AWS::Region"
