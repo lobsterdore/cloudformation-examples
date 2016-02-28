@@ -184,7 +184,6 @@
             "Ref":"ElasticIP"
           },
           "\n",
-          "systemctl daemon-reload\n",
           "systemctl start openvpn@server"
         ] ] } }
       }
