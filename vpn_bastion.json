@@ -185,7 +185,7 @@
           },
           "\n",
           "systemctl daemon-reload\n",
-          "service openvpn restart"
+          "systemctl start openvpn@server"
         ] ] } }
       }
     },
