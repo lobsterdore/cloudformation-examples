@@ -143,7 +143,6 @@ Resources:
           /opt/aws/bin/cfn-init --resource WebLaunchConfig --stack ${AWS::StackName} --region ${AWS::Region}
           yum install -y nginx
           service nginx start
-          sleep 1m
           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WebServerGroup --region ${AWS::Region}
 
   WebElasticLoadBalancer:
