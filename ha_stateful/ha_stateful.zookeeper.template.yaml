@@ -1,0 +1,527 @@
+---
+# ha_stateful.zookeeper.template.yaml
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: HA Stateful Zookeeper Example
+
+Parameters:
+  InstanceType:
+    Description: Stateful Zookeeper EC2 instance type
+    Type: String
+    Default: t2.nano
+    AllowedValues:
+    - t2.nano
+    - t2.micro
+    ConstraintDescription: must be a valid EC2 instance type.
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  InstanceImageId:
+    Description: Image ID for EC2 instances
+    Type: String
+
+Resources:
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/22
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}c
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  Route:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref RouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref RouteTable
+
+  PublicSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetC
+      RouteTableId: !Ref RouteTable
+
+  HostedZonePrivate:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: internal
+      VPCs:
+        - VPCId: !Ref VPC
+          VPCRegion: !Sub ${AWS::Region}
+
+  PublicSshSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable external SSH access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+
+  StatefulZookeeperSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable external access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '2181'
+          ToPort: '2181'
+          CidrIp: 10.0.0.0/22
+        - IpProtocol: tcp
+          FromPort: '2888'
+          ToPort: '2888'
+          CidrIp: 10.0.0.0/22
+        - IpProtocol: tcp
+          FromPort: '3888'
+          ToPort: '3888'
+          CidrIp: 10.0.0.0/22
+
+  StatefulZookeeperElbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable external ELB access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '2181'
+          ToPort: '2181'
+          CidrIp: 10.0.0.0/22
+
+  StatefulZookeeperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: StatefulZookeeperPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Action:
+                - ec2:AttachNetworkInterface
+                - ec2:AttachVolume
+                - ec2:DescribeInstances
+                - ec2:DescribeNetworkInterfaces
+                - ec2:DescribeTags
+                - ec2:DescribeVolumes
+              Resource: "*"
+              Effect: Allow
+
+  StatefulZookeeperInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: StatefulZookeeperRole
+
+  StatefulZookeeperLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      CrossZone: 'true'
+      Scheme: internal
+      SecurityGroups:
+        - !Ref StatefulZookeeperElbSecurityGroup
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+        - !Ref PublicSubnetC
+      Listeners:
+        - LoadBalancerPort: '2181'
+          InstancePort: '2181'
+          Protocol: TCP
+
+  StatefulZookeeperLoadBalancerDns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      AliasTarget:
+        DNSName:  !GetAtt StatefulZookeeperLoadBalancer.DNSName
+        HostedZoneId:  !GetAtt StatefulZookeeperLoadBalancer.CanonicalHostedZoneNameID
+      HostedZoneId:  !Ref HostedZonePrivate
+      Name: zookeeper.internal
+      Type: A
+
+  StatefulZookeeperLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    DependsOn:
+      - StatefulZookeeperEniOne
+      - StatefulZookeeperEniTwo
+      - StatefulZookeeperEniThree
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/zookeeper/conf/environment:
+              content: |
+                NAME=zookeeper
+                ZOOCFGDIR=/etc/$NAME/conf
+                CLASSPATH="$ZOOCFGDIR:/usr/share/java/jline.jar:/usr/share/java/log4j-1.2.jar:/usr/share/java/xercesImpl.jar:/usr/share/java/xmlParserAPIs.jar:/usr/share/java/netty.jar:/usr/share/java/slf4j-api.jar:/usr/share/java/slf4j-log4j12.jar:/usr/share/java/zookeeper.jar"
+                ZOOCFG="$ZOOCFGDIR/zoo.cfg"
+                ZOO_LOG_DIR=/var/log/$NAME
+                USER=$NAME
+                GROUP=$NAME
+                PIDDIR=/var/run/$NAME
+                PIDFILE=$PIDDIR/$NAME.pid
+                SCRIPTNAME=/etc/init.d/$NAME
+                JAVA=/usr/bin/java
+                ZOOMAIN="org.apache.zookeeper.server.quorum.QuorumPeerMain"
+                ZOO_LOG4J_PROP="INFO,ROLLINGFILE"
+                JMXLOCALONLY=false
+                JAVA_OPTS="-Xmx128m -Xms128m"
+              mode: "000644"
+              owner: "root"
+              group: "root"
+            /etc/zookeeper/conf/zoo.cfg:
+              content: !Sub |
+                tickTime=1000
+                initLimit=1800
+                syncLimit=300
+                dataDir=/var/lib/zookeeper
+                clientPort=2181
+                server.1=${StatefulZookeeperEniOne.PrimaryPrivateIpAddress}:2888:3888
+                server.2=${StatefulZookeeperEniTwo.PrimaryPrivateIpAddress}:2888:3888
+                server.3=${StatefulZookeeperEniThree.PrimaryPrivateIpAddress}:2888:3888
+                leaderServes=yes
+              mode: "000644"
+              owner: "root"
+              group: "root"
+    Properties:
+      AssociatePublicIpAddress: 'true'
+      IamInstanceProfile: !Ref StatefulZookeeperInstanceProfile
+      ImageId: !Ref InstanceImageId
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref PublicSshSecurityGroup
+        - !Ref StatefulZookeeperSecurityGroup
+      KeyName: !Ref KeyName
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          addgroup \
+            -gid 5000 \
+            zookeeper
+          adduser \
+            --gid 5000 \
+            --uid 5000 \
+            --no-create-home \
+            --disabled-password \
+            --disabled-login \
+            --system \
+            zookeeper
+          apt-get update
+          apt-get install -y zookeeper zookeeperd python2.7 python-pip curl jq ntp
+          service zookeeper stop
+          pip install awscli https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          cfn-init \
+            --resource StatefulZookeeperLaunchConfig \
+            --stack ${AWS::StackName} \
+            --region ${AWS::Region}
+          INSTANCE_ID=$( curl -s http://169.254.169.254/latest/meta-data/instance-id )
+          INSTANCE_TAGS=$( aws ec2 describe-tags \
+            --filters "Name=resource-id,Values=$INSTANCE_ID" \
+            --region ${AWS::Region} \
+            --query "{ instanceeniid:Tags[?Key=='instanceeniid'].Value, instanceindex:Tags[?Key=='instanceindex'].Value, instancevolume:Tags[?Key=='instancevolume'].Value }" )
+          INSTANCE_ENI_ID=$( echo "$INSTANCE_TAGS" | jq -r '.instanceeniid | .[0]' )
+          aws ec2 attach-network-interface \
+            --network-interface-id $INSTANCE_ENI_ID \
+            --instance-id $INSTANCE_ID \
+            --region ${AWS::Region} \
+            --device-index 1
+          INSTANCE_ENI_IP=$( aws ec2 describe-network-interfaces \
+            --network-interface-ids $INSTANCE_ENI_ID \
+            --region ${AWS::Region} \
+            --query "NetworkInterfaces[0].PrivateIpAddress" \
+            --output text )
+          GATEWAY_IP=$( /sbin/ip route | awk '/default/ { print $3 }' )
+          echo -e "auto eth1\niface eth1 inet dhcp\n  post-up ip route add default via $GATEWAY_IP dev eth1 tab 2\n  post-up ip rule add from $INSTANCE_ENI_IP/32 tab 2 priority 600" \
+            > /etc/network/interfaces.d/eth1.cfg
+          sleep 15s
+          service networking restart
+          INSTANCE_VOLUME_ID=$( echo "$INSTANCE_TAGS" | jq -r '.instancevolume | .[0]' )
+          aws ec2 attach-volume \
+            --volume-id $INSTANCE_VOLUME_ID \
+            --instance-id $INSTANCE_ID \
+            --region ${AWS::Region} \
+            --device /dev/xvdb
+          sleep 15s
+          set +e
+          blkid -L zookeeperdata
+          FILESYSTEM_EXISTS=$?
+          set -e
+          if [[ $FILESYSTEM_EXISTS -ne 0 ]]; then
+            mkfs -t ext4 -L zookeeperdata /dev/xvdb
+          fi
+          mkdir -p /var/lib/zookeeper
+          mount /dev/xvdb /var/lib/zookeeper
+          echo "LABEL=zookeeperdata /var/lib/zookeeper ext4 nofail 0 0" >> /etc/fstab
+          chown -R zookeeper:zookeeper /var/lib/zookeeper
+          INSTANCE_ASG=$( aws ec2 describe-instances \
+            --instance-id $INSTANCE_ID \
+            --region ${AWS::Region} \
+            --query "Reservations[0].Instances[0].Tags[?Key=='aws:cloudformation:logical-id'].Value" \
+            --output text )
+          echo "$INSTANCE_TAGS" \
+            | jq -r '.instanceindex | .[0]' \
+            > /var/lib/zookeeper/myid
+          service zookeeper start
+          set +e
+          ps auxw | grep -P '\b'zookeeper'(?!-)\b'
+          ZOOKEEPER_RUNNING=$?
+          set -e
+          cfn-signal \
+            -e $ZOOKEEPER_RUNNING \
+            --stack ${AWS::StackName} \
+            --resource $INSTANCE_ASG \
+            --region ${AWS::Region}
+
+  StatefulZookeeperEniOne:
+    Type: "AWS::EC2::NetworkInterface"
+    Properties:
+      Description: StatefulZookeeperGroupOne ENI
+      GroupSet:
+        - !Ref PublicSshSecurityGroup
+        - !Ref StatefulZookeeperSecurityGroup
+      SubnetId: !Ref PublicSubnetA
+
+  StatefulZookeeperVolumeOne:
+    Type: "AWS::EC2::Volume"
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}a
+      Size: 8
+      VolumeType: gp2
+
+  StatefulZookeeperGroupOne:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - StatefulZookeeperEniOne
+      - StatefulZookeeperVolumeOne
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+      LaunchConfigurationName: !Ref  StatefulZookeeperLaunchConfig
+      LoadBalancerNames:
+        - !Ref StatefulZookeeperLoadBalancer
+      DesiredCapacity: 1
+      MinSize: 0
+      MaxSize: 1
+      HealthCheckGracePeriod: '300'
+      HealthCheckType: EC2
+      Tags:
+        - Key: instanceeniid
+          Value: !Ref StatefulZookeeperEniOne
+          PropagateAtLaunch: 'true'
+        - Key: instanceindex
+          Value: '1'
+          PropagateAtLaunch: 'true'
+        - Key: instancevolume
+          Value: !Ref StatefulZookeeperVolumeOne
+          PropagateAtLaunch: 'true'
+        - Key: Name
+          Value: 'zookeeper-one'
+          PropagateAtLaunch: 'true'
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 0
+        PauseTime: PT10M
+        WaitOnResourceSignals: 'true'
+
+  StatefulZookeeperEniTwo:
+    Type: "AWS::EC2::NetworkInterface"
+    Properties:
+      Description: StatefulZookeeperGroupTwo ENI
+      GroupSet:
+        - !Ref PublicSshSecurityGroup
+        - !Ref StatefulZookeeperSecurityGroup
+      SubnetId: !Ref PublicSubnetB
+
+  StatefulZookeeperVolumeTwo:
+    Type: "AWS::EC2::Volume"
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}b
+      Size: 8
+      VolumeType: gp2
+
+  StatefulZookeeperGroupTwo:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - StatefulZookeeperEniTwo
+      - StatefulZookeeperVolumeTwo
+      - StatefulZookeeperGroupOne
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetB
+      LaunchConfigurationName: !Ref  StatefulZookeeperLaunchConfig
+      LoadBalancerNames:
+        - !Ref StatefulZookeeperLoadBalancer
+      DesiredCapacity: 1
+      MinSize: 0
+      MaxSize: 1
+      HealthCheckGracePeriod: '300'
+      HealthCheckType: EC2
+      Tags:
+        - Key: instanceeniid
+          Value: !Ref StatefulZookeeperEniTwo
+          PropagateAtLaunch: 'true'
+        - Key: instanceindex
+          Value: '2'
+          PropagateAtLaunch: 'true'
+        - Key: instancevolume
+          Value: !Ref StatefulZookeeperVolumeTwo
+          PropagateAtLaunch: 'true'
+        - Key: Name
+          Value: 'zookeeper-two'
+          PropagateAtLaunch: 'true'
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 0
+        PauseTime: PT10M
+        WaitOnResourceSignals: 'true'
+
+  StatefulZookeeperEniThree:
+    Type: "AWS::EC2::NetworkInterface"
+    Properties:
+      Description: StatefulZookeeperGroupThree ENI
+      GroupSet:
+        - !Ref PublicSshSecurityGroup
+        - !Ref StatefulZookeeperSecurityGroup
+      SubnetId: !Ref PublicSubnetC
+
+  StatefulZookeeperVolumeThree:
+    Type: "AWS::EC2::Volume"
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}c
+      Size: 8
+      VolumeType: gp2
+
+  StatefulZookeeperGroupThree:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - StatefulZookeeperEniThree
+      - StatefulZookeeperVolumeThree
+      - StatefulZookeeperGroupTwo
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetC
+      LaunchConfigurationName: !Ref  StatefulZookeeperLaunchConfig
+      LoadBalancerNames:
+        - !Ref StatefulZookeeperLoadBalancer
+      DesiredCapacity: 1
+      MinSize: 0
+      MaxSize: 1
+      HealthCheckGracePeriod: '300'
+      HealthCheckType: EC2
+      Tags:
+        - Key: instanceeniid
+          Value: !Ref StatefulZookeeperEniThree
+          PropagateAtLaunch: 'true'
+        - Key: instanceindex
+          Value: '3'
+          PropagateAtLaunch: 'true'
+        - Key: instancevolume
+          Value: !Ref StatefulZookeeperVolumeThree
+          PropagateAtLaunch: 'true'
+        - Key: Name
+          Value: 'zookeeper-three'
+          PropagateAtLaunch: 'true'
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 0
+        PauseTime: PT10M
+        WaitOnResourceSignals: 'true'
