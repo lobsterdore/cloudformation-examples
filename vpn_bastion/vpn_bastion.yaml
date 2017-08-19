@@ -1,0 +1,294 @@
+---
+
+Description: Bastion stack
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  ImageId:
+    Description: AMI ID of the API Lists
+    Type: AWS::EC2::Image::Id
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.nano
+    AllowedValues:
+    - t2.nano
+    - t2.micro
+    ConstraintDescription: must be a valid EC2 instance type.
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  S3VpnKeysBucketName:
+    Description: Name of S3 Secrets Bucket
+    Type: String
+
+Resources:
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/22
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}c
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackId
+
+  Route:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref RouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref RouteTable
+
+  PublicSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetC
+      RouteTableId: !Ref RouteTable
+
+  BastionSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable access to Bastion
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 10.0.0.0/22
+        - IpProtocol: udp
+          FromPort: '1194'
+          ToPort: '1194'
+          CidrIp: 0.0.0.0/0
+
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+
+  BastionAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: BastionAccessPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - ec2:AssociateAddress
+              - ec2:DescribeInstances
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - s3:List*
+              - s3:Get*
+            Effect: Allow
+            Resource:
+              - !Sub arn:aws:s3:::${S3VpnKeysBucketName}/*
+              - !Sub arn:aws:s3:::${S3VpnKeysBucketName}
+      Roles:
+        - !Ref BastionRole
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+       - !Ref BastionRole
+
+  BastionEIP:
+    Type: "AWS::EC2::EIP"
+
+  BastionLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/openvpn/server.conf:
+              content: !Sub |
+                port 1194
+                proto udp
+                dev tun
+                server 172.16.0.0 255.255.252.0
+                push "route 10.0.0.0 255.255.252.0"
+                ca /etc/openvpn/keys/ca.crt
+                cert /etc/openvpn/keys/server.crt
+                key /etc/openvpn/keys/server.key
+                dh /etc/openvpn/keys/dh2048.pem
+                tls-server
+                tls-auth /etc/openvpn/keys/static.key 0
+                tls-version-min 1.2
+                tls-cipher TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256:TLS-ECDHE-ECDSA-WITH-AES-128-GCM-SHA256:TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384:TLS-DHE-RSA-WITH-AES-256-CBC-SHA256
+                cipher AES-256-CBC
+                auth SHA512
+                ifconfig-pool-persist ipp.txt
+                keepalive 10 120
+                ping-timer-rem
+                comp-lzo
+                persist-key
+                persist-tun
+                status openvpn-status.log
+                log-append /var/log/openvpn.log
+                verb 3
+                max-clients 100
+                user nobody
+                group nogroup
+              mode: "000644"
+              owner: "root"
+              group: "root"
+    Properties:
+      AssociatePublicIpAddress: 'true'
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      ImageId: !Ref ImageId
+      InstanceMonitoring: false
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref BastionSG
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          apt-get update && apt-get install -y curl python-pip ntp wget
+          wget -O - https://swupdate.openvpn.net/repos/repo-public.gpg|apt-key add -
+          echo "deb http://build.openvpn.net/debian/openvpn/stable xenial main" \
+            > /etc/apt/sources.list.d/openvpn-aptrepo.list
+          apt-get update && apt-get install -y openvpn
+          pip install awscli https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          cfn-init \
+            --resource BastionLaunchConfig \
+            --stack ${AWS::StackName} \
+            --region ${AWS::Region}
+          mkdir -p /etc/openvpn/keys
+          aws s3 cp s3://${S3VpnKeysBucketName} \
+            /etc/openvpn/keys \
+            --recursive \
+            --include "ca.crt" \
+            --include "server.crt" \
+            --include "server.key" \
+            --include "static.key" \
+            --include "dh2048.pem"
+          chmod -R 0600 /etc/openvpn/keys
+          echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+          sysctl -p
+          iptables -t nat -A POSTROUTING -s 172.16.0.0/22 -o eth0 -j MASQUERADE
+          INSTANCE_ID=$( curl -s http://169.254.169.254/latest/meta-data/instance-id )
+          aws ec2 associate-address \
+            --region ${AWS::Region} \
+            --instance-id  $INSTANCE_ID \
+            --public-ip ${BastionEIP}
+          systemctl daemon-reload
+          service openvpn start
+          INSTANCE_ASG=$( aws ec2 describe-instances \
+            --instance-id $INSTANCE_ID \
+            --region ${AWS::Region} \
+            --query "Reservations[0].Instances[0].Tags[?Key=='aws:cloudformation:logical-id'].Value" \
+            --output text )
+          set +e
+          ps auxw | grep -P '\b'openvpn'(?!-)\b'
+          OPENVPN_RUNNING=$?
+          set -e
+          cfn-signal \
+            -e $OPENVPN_RUNNING \
+            --stack ${AWS::StackName} \
+            --resource $INSTANCE_ASG \
+            --region ${AWS::Region}
+
+  BastionGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: 1
+      LaunchConfigurationName: !Ref BastionLaunchConfig
+      MaxSize: 2
+      MinSize: 1
+      VPCZoneIdentifier:
+      - !Ref PublicSubnetA
+      - !Ref PublicSubnetB
+      - !Ref PublicSubnetC
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 1
+        PauseTime: PT10M
+        WaitOnResourceSignals: 'true'
