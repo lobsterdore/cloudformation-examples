@@ -1,0 +1,18 @@
+---
+
+Description: S3 bucket
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  BucketPrefix:
+    Description: Prefix for S3 bucket
+    Type: String
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      BucketName: !Sub ${BucketPrefix}-vpn-tutorial-keys-bucket
+      VersioningConfiguration:
+        Status: "Enabled"
